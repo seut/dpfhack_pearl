@@ -1,0 +1,782 @@
+diff -Nurp -x '.svn*' -x 'src*' -x 'fw*' -x Changelog dpf-ax.r11orig/build-dpf-lcd4linux.sh dpf-ax/build-dpf-lcd4linux.sh
+--- dpf-ax/build-dpf-lcd4linux.sh	2015-11-18 14:41:09.000000000 +0100
++++ dpf-ax_works/build-dpf-lcd4linux.sh	2017-01-08 20:00:37.018406432 +0100
+@@ -9,6 +9,14 @@ for i in $PREREQUISITES; do
+ 	fi
+ done
+ 	
++# Allow to pass on dpf distribution location, if not pwd:
++
++if [ -z $1 ]; then
++	DPFLIB_LOCATION=`pwd`
++else
++	DPFLIB_LOCATION=$1
++fi
++
+ if [ $err ]; then
+ 	echo "Error, cancelling"
+ 	exit
+@@ -16,19 +24,31 @@ fi
+ 
+ if [ -e lcd4linux ]; then
+ 	echo "lcd4linux installed, not fetching"
++	cd lcd4linux
+ else
+ 	# Check out source from SVN
+-	svn co https://ssl.bulix.org/svn/lcd4linux/trunk lcd4linux
++	#svn co https://ssl.bulix.org/svn/lcd4linux/trunk lcd4linux
++
++        # Check out source from SVN
++       svn co -r1184 https://ssl.bulix.org/svn/lcd4linux/trunk lcd4linux
++       cd dpflib
++       ln -s dpf.h libdpf.h
++       ln -s . libdpf
++       cd ../lcd4linux
++       ln -s ${DPFLIB_LOCATION}/dpflib   ./libdpf
++       patch -p1 < ../lcd4linux-svn1184-dpf.patch
++ 
+ fi
+ 
+-cd lcd4linux
++export CPPFLAGS="-I$DPFLIB_LOCATION/dpflib -I$DPFLIB_LOCATION/include"
++export LDFLAGS=-L$DPFLIB_LOCATION/dpflib
+ 
+ if [ -e Makefile ]; then
+ 	echo "Not configuring, Makefile found"
+ else
+ 	./bootstrap
+ 	# Feel free to configure this differently:
+-	./configure --with-drivers=DPF
++	./configure --with-drivers=DPF --with-plugins='all,!dbus,!mpris_dbus'
+ fi
+ 
+ make
+diff -Nurp -x '.svn*' -x 'src*' -x 'fw*' -x Changelog dpf-ax.r11orig/dpflib/dpf.h dpf-ax/dpflib/dpf.h
+--- dpf-ax.r11orig/dpflib/dpf.h	2012-04-23 11:33:32.525820119 +0200
++++ dpf-ax/dpflib/dpf.h	2012-04-23 10:08:24.413948782 +0200
+@@ -80,7 +80,7 @@ enum {
+ 	TYPE_INTEGER,
+ 	TYPE_STRING,
+ }; 
+-
++const char* dpf_getVersion(void);
+ /**
+  Opens the DPF device. if dev is not NULL, open device, otherwise, look for
+  USB device.
+diff -Nurp -x '.svn*' -x 'src*' -x 'fw*' -x Changelog dpf-ax.r11orig/dpflib/dpflib.c dpf-ax/dpflib/dpflib.c
+--- dpf-ax.r11orig/dpflib/dpflib.c	2012-04-23 11:33:32.525820119 +0200
++++ dpf-ax/dpflib/dpflib.c	2012-04-23 10:08:24.433950526 +0200
+@@ -12,6 +12,7 @@
+ // FIXME: Put all those SCSI commands in one (wrapped) place.
+ 
+ #include "dpf.h"
++#include "version.h"
+ 
+ #include <unistd.h>
+ #include <stdio.h>
+@@ -27,6 +28,7 @@
+ extern AccessMethods scsi_methods;
+ extern AccessMethods hid_methods;
+ 
++static const char *version = VERSION_NAME " - " VERSION_MAIN VERSION_SUB;
+ 
+ /*
+ static
+@@ -47,6 +49,10 @@ int dpf_query(DPFHANDLE h)
+ }
+ */
+ 
++const char* dpf_getVersion(void)
++{
++	return version;
++}
+ 
+ 
+ int dpf_open(const char *dev, DPFHANDLE *h)
+diff -Nurp -x '.svn*' -x 'src*' -x 'fw*' -x Changelog dpf-ax.r11orig/dpflib/version.h dpf-ax/dpflib/version.h
+--- dpf-ax.r11orig/dpflib/version.h	1970-01-01 01:00:00.000000000 +0100
++++ dpf-ax/dpflib/version.h	2012-04-23 10:08:24.433950526 +0200
+@@ -0,0 +1,3 @@
++#define VERSION_NAME "dpflib"
++#define VERSION_MAIN "0.202"
++#define VERSION_SUB  "devel"
+diff -Nurp -x '.svn*' -x 'src*' -x 'fw*' -x Changelog dpf-ax.r11orig/lcd4linux-svn1184-dpf.patch dpf-ax/lcd4linux-svn1184-dpf.patch
+--- dpf-ax.r11orig/lcd4linux-svn1184-dpf.patch	1970-01-01 01:00:00.000000000 +0100
++++ dpf-ax/lcd4linux-svn1184-dpf.patch	2012-03-27 23:54:44.000000000 +0200
+@@ -0,0 +1,351 @@
++Index: lcd4linux-r1184/drv_dpf.c
++===================================================================
++--- lcd4linux-r1184.orig/drv_dpf.c	2012-03-27 23:51:23.000000000 +0200
+++++ lcd4linux-r1184/drv_dpf.c	2012-03-27 23:54:12.000000000 +0200
++@@ -5,12 +5,13 @@
++  * This is a first working approach for AX206 based DPFs. In future,
++  * more DPFs might be covered by that library. Work in progress.
++  *
++- * See http://picframe.spritesserver.nl/ for more info.
+++ * See http://tech.section5.ch/news/?p=68 for more info.
++  * 
++  * Copyright (C) 2008 Jeroen Domburg <picframe@spritesmods.com>
++  * Modified from sample code by:
++  * Copyright (C) 2005 Michael Reinelt <michael@reinelt.co.at>
++  * Copyright (C) 2005, 2006, 2007 The LCD4Linux Team <lcd4linux-devel@users.sourceforge.net>
+++ * Mods by <hackfin@section5.ch>
++  *
++  * This file is part of LCD4Linux.
++  *
++@@ -70,130 +71,146 @@
++ 
++ static int drv_dpf_open(const char *section)
++ {
++-    int error;
++-    char *dev;
+++	int error;
+++	char *dev;
+++	int i;
+++	DPFValue val;
+++
+++	// Currently, the Port specification is unused.
+++
+++	dev = cfg_get(section, "Port", NULL);
+++	if (dev == NULL || *dev == '\0') {
+++		error("dpf: no '%s.Port' entry from %s", section, cfg_source());
+++		return -1;
+++	}
++ 
++-    // Currently, the Port specification is unused.
+++	error = dpf_open(dev, &g_h);
+++	if (error < 0) {
+++		error("dpf: cannot open dpf device %s", dev);
+++		return -1;
+++	}
++ 
++-    dev = cfg_get(section, "Port", NULL);
++-    if (dev == NULL || *dev == '\0') {
++-	error("dpf: no '%s.Port' entry from %s", section, cfg_source());
++-	return -1;
++-    }
+++	val.type = TYPE_INTEGER;
+++
+++    if (cfg_number(section, "Orientation", 0, 0, 3, &i) > 0) {
+++		val.value.integer = i;
+++		dpf_setproperty(g_h, PROPERTY_ORIENTATION, &val);
+++	}
++ 
++-    error = dpf_open(NULL, &g_h);
++-    if (error < 0) {
++-	error("dpf: cannot open dpf device %s", dev);
++-	return -1;
+++    if (cfg_number(section, "Backlight", 0, 0, 7, &i) > 0) {
+++		val.value.integer = i;
+++		dpf_setproperty(g_h, PROPERTY_BRIGHTNESS, &val);
++     }
++ 
++-    return 0;
+++	return 0;
++ }
++ 
++ 
++ static int drv_dpf_close(void)
++ {
++-    dpf_close(g_h);
+++	dpf_close(g_h);
++ 
++-    return 0;
+++	return 0;
++ }
++ 
++ #define _RGB565_0(p) \
++-	(( ((p.R) & 0xf8)      ) | (((p.G) & 0xe0) >> 5))
+++	(( ((p.R) & 0xf8)	   ) | (((p.G) & 0xe0) >> 5))
++ #define _RGB565_1(p) \
++ 	(( ((p.G) & 0x1c) << 3 ) | (((p.B) & 0xf8) >> 3))
++ 
++-static void drv_dpf_blit(const int row, const int col, const int height, const int width)
+++static void drv_dpf_blit(const int row, const int col, const int height,
+++	const int width)
++ {
++-    int r, c;
++-    short rect[4];
++-    unsigned long i;
++-    RGBA p;
++-    unsigned char *pix;
++-
++-    pix = g_fb;
++-    for (r = row; r < row + height; r++) {
++-	for (c = col; c < col + width; c++) {
++-	    p = drv_generic_graphic_rgb(r, c);
++-	    *pix++ = _RGB565_0(p);
++-	    *pix++ = _RGB565_1(p);
+++	int r, c;
+++	short rect[4];
+++	unsigned long i;
+++	RGBA p;
+++	unsigned char *pix;
+++
+++	pix = g_fb;
+++	for (r = row; r < row + height; r++) {
+++		for (c = col; c < col + width; c++) {
+++			p = drv_generic_graphic_rgb(r, c);
+++			*pix++ = _RGB565_0(p);
+++			*pix++ = _RGB565_1(p);
+++		}
++ 	}
++-    }
++-    rect[0] = col;
++-    rect[1] = row;
++-    rect[2] = col + width;
++-    rect[3] = row + height;
++-    dpf_screen_blit(g_h, g_fb, rect);
+++	rect[0] = col; rect[1] = row;
+++	rect[2] = col + width; rect[3] = row + height;
+++	dpf_screen_blit(g_h, g_fb, rect);
++ }
++ 
++ 
++ /* start graphic display */
++ static int drv_dpf_start2(const char *section)
++ {
++-    char *s;
+++	char *s;
++ 
++-    s = cfg_get(section, "Font", "6x8");
++-    if (s == NULL || *s == '\0') {
++-	error("%s: no '%s.Font' entry from %s", Name, section, cfg_source());
++-	return -1;
++-    }
+++	s = cfg_get(section, "Font", "6x8");
+++	if (s == NULL || *s == '\0') {
+++		error("%s: no '%s.Font' entry from %s", Name, section, cfg_source());
+++		return -1;
+++	}
++ 
++-    XRES = -1;
++-    YRES = -1;
++-    if (sscanf(s, "%dx%d", &XRES, &YRES) != 2 || XRES < 1 || YRES < 1) {
++-	error("%s: bad Font '%s' from %s", Name, s, cfg_source());
++-	return -1;
++-    }
+++	XRES = -1;
+++	YRES = -1;
+++	if (sscanf(s, "%dx%d", &XRES, &YRES) != 2 || XRES < 1 || YRES < 1) {
+++		error("%s: bad Font '%s' from %s", Name, s, cfg_source());
+++		return -1;
+++	}
++ 
++     /* Fixme: provider other fonts someday... */
++     /* Overridden - we have scaled the textout drawing */
++ /*  if (XRES != 6 && YRES != 8) {
++-	error("%s: bad Font '%s' from %s (only 6x8 at the moment)", Name, s, cfg_source());
++-	return -1;
+++        error("%s: bad Font '%s' from %s (only 6x8 at the moment)", Name, s, cfg_source());
+++        return -1;
++     } */
++ 
++     /* we dont want fonts below 6 width */
++     if (XRES < 6) {
++-	error("%s: bad Font '%s' width '%d' using minimum of 6)", Name, s, XRES);
++-	XRES = 6;
+++        error("%s: bad Font '%s' width '%d' using minimum of 6)", Name, s, XRES);
+++        XRES = 6;
++     }
++ 
++     /* we dont want fonts below 8 height */
++     if (YRES < 8) {
++-	error("%s: bad Font '%s' height '%d' using minimum of 8)", Name, s, YRES);
++-	YRES = 8;
+++        error("%s: bad Font '%s' height '%d' using minimum of 8)", Name, s, YRES);
+++        YRES = 8;
++     }
++ 
++-    /* open communication with the display */
++-    if (drv_dpf_open(section) < 0) {
++-	return -1;
++-    }
+++	/* open communication with the display */
+++	if (drv_dpf_open(section) < 0) {
+++		return -1;
+++	}
++ 
++-    /* you surely want to allocate a framebuffer or something... */
++-    g_fb = malloc(g_h->height * g_h->width * g_h->bpp);
+++	/* you surely want to allocate a framebuffer or something... */
+++	g_fb = malloc(g_h->height * g_h->width * g_h->bpp);
++ 
++-    /* set width/height from dpf firmware specs */
++-    DROWS = g_h->height;
++-    DCOLS = g_h->width;
+++	/* set width/height from dpf firmware specs */
+++	DROWS = g_h->height;
+++	DCOLS = g_h->width;
++ 
++-    return 0;
+++	return 0;
++ }
++ 
++ /****************************************/
++-/***            plugins               ***/
+++/***			plugins				  ***/
++ /****************************************/
++ 
++ static void plugin_backlight(RESULT * result, RESULT * arg1)
++ {
++-    int bl_on;
++-    bl_on = (R2N(arg1) == 0 ? 0 : 1);
++-    dpf_backlight(g_h, bl_on);
++-    SetResult(&result, R_NUMBER, &bl_on);
+++	DPFValue val;
+++
+++	val.type = TYPE_INTEGER;
+++	val.value.integer = R2N(arg1);
+++	printf("Setting brightness...\n");
+++	dpf_setproperty(g_h, PROPERTY_BRIGHTNESS, &val);
+++	SetResult(&result, R_NUMBER, &val.value.integer);
++ }
++ 
++ 
++ /****************************************/
++-/***        widget callbacks          ***/
+++/***		widget callbacks		  ***/
++ /****************************************/
++ 
++ 
++@@ -204,75 +221,76 @@
++ 
++ 
++ /****************************************/
++-/***        exported functions        ***/
+++/***		exported functions		  ***/
++ /****************************************/
++ 
++ 
++ /* list models */
++ int drv_dpf_list(void)
++ {
++-    printf("generic hacked photo frame");
++-    return 0;
+++	printf("generic hacked photo frame");
+++	return 0;
++ }
++ 
++ 
++ /* initialize driver & display */
++ int drv_dpf_init2(const char *section, const int quiet)
++ {
++-    int ret;
+++	int ret;
++ 
++-    /* real worker functions */
++-    drv_generic_graphic_real_blit = drv_dpf_blit;
+++	/* real worker functions */
+++	drv_generic_graphic_real_blit = drv_dpf_blit;
++ 
++-    /* start display */
++-    if ((ret = drv_dpf_start2(section)) != 0)
++-	return ret;
++-
++-    /* initialize generic graphic driver */
++-    if ((ret = drv_generic_graphic_init(section, Name)) != 0)
++-	return ret;
++-
++-    if (!quiet) {
++-	char buffer[40];
++-	qprintf(buffer, sizeof(buffer), "%s %dx%d", Name, DCOLS, DROWS);
++-	if (drv_generic_graphic_greet(buffer, NULL)) {
++-	    sleep(3);
++-	    drv_generic_graphic_clear();
+++	/* start display */
+++	if ((ret = drv_dpf_start2(section)) != 0)
+++		return ret;
+++
+++	/* initialize generic graphic driver */
+++	if ((ret = drv_generic_graphic_init(section, Name)) != 0)
+++		return ret;
+++
+++	if (!quiet) {
+++		char buffer[40];
+++		qprintf(buffer, sizeof(buffer), "%s %dx%d", Name, DCOLS, DROWS);
+++		if (drv_generic_graphic_greet(buffer, NULL)) {
+++			sleep(3);
+++			drv_generic_graphic_clear();
+++		}
++ 	}
++-    }
++ 
++-    /* register plugins */
++-    AddFunction("LCD::backlight", 1, plugin_backlight);
+++	/* register plugins */
+++	AddFunction("LCD::backlight", 1, plugin_backlight);
++ 
++-    return 0;
+++	return 0;
++ }
++ 
++ 
++ /* close driver & display */
++ int drv_dpf_quit2(const int quiet)
++ {
++-    info("%s: shutting down.", Name);
+++	info("%s: shutting down.", Name);
++ 
++-    /* clear display */
++-    drv_generic_graphic_clear();
+++	/* clear display */
+++	drv_generic_graphic_clear();
++ 
++-    /* say goodbye... */
++-    if (!quiet) {
++-	drv_generic_graphic_greet("goodbye!", NULL);
++-    }
+++	/* say goodbye... */
+++	if (!quiet) {
+++		drv_generic_graphic_greet("goodbye!", NULL);
+++	}
++ 
++-    drv_generic_graphic_quit();
+++	drv_generic_graphic_quit();
++ 
++-    debug("closing connection");
++-    drv_dpf_close();
+++	debug("closing connection");
+++	drv_dpf_close();
++ 
++-    return (0);
+++	return (0);
++ }
++ 
++ 
++ DRIVER drv_DPF = {
++-    .name = Name,
++-    .list = drv_dpf_list,
++-    .init = drv_dpf_init2,
++-    .quit = drv_dpf_quit2,
+++	.name = Name,
+++	.list = drv_dpf_list,
+++	.init = drv_dpf_init2,
+++	.quit = drv_dpf_quit2,
++ };
+++
+diff -Nurp -x '.svn*' -x 'src*' -x 'fw*' -x Changelog dpf-ax.r11orig/python/Makefile dpf-ax/python/Makefile
+--- dpf-ax.r11orig/python/Makefile	2012-04-23 11:33:32.645806731 +0200
++++ dpf-ax/python/Makefile	2012-04-23 10:08:24.433950526 +0200
+@@ -1,69 +1,40 @@
+-# Cygwin/Linux-GCC Makefile
+-#
+-# $Id: Makefile 301 2010-09-30 13:09:13Z strubi $
+-#
+-# This is the GNU Makefile to create:
+-# - a Python module for the API tester
+-#
+-
+-DEVLIB  = ..
+-
+-############################################################################
+-# Configure these to your needs
+-LIBNAME = dpf
+-DLLCSRCS =
+-COMMONSRCDIR = $(DEVLIB)/python
++DEVLIB  = ./dpf-ax
++DPFLIB = $(DEVLIB)/dpflib
+ DLLINSTALLDIR = ../$(CONFIG)
+-DLLCOMMONSRCS = py_device.c
+-DEBUGOPTS = -g
++LIBNAME = dpf
++DLLEXT = .so
++DLL = $(CONFIG)/lib$(LIBNAME)$(DLLEXT)
+ 
+-ifdef DEBUG
+-	DEBUGOPTS += -DDEBUG
++ifdef RELEASE
++	CONFIG = Release
++else
++	CONFIG = Debug
+ endif
+ 
+-CLIENTLIB = -L$(DEVLIB)/dpflib -ldpf -lusb
+-
+-############################################################################
+ 
+-MODULENAME = $(LIBNAME)
++all: install
+ 
+-ifndef PLATFORM
+-PLATFORM=$(shell "uname")
+-endif
+-
+-ifeq (Linux, $(PLATFORM))
+-	PYTHON=$(shell pyversions -d)
+-	include $(DEVLIB)/unixdll.mk
+-	DLLDEPS = $(CLIENTLIB) -l$(PYTHON)
+-	PYTHONINCLUDES = -I/usr/include/$(PYTHON)
+-else
++python:
++	python setup.py build
+ 
+-	PYTHONSRC = $(HOME)/src/EXTERN/Python26
+-
+-ifeq (mingw32, $(PLATFORM))
+-	include $(DEVLIB)/msdll.mk
+-	PYTHONINCLUDES = -I$(PYTHONSRC)/include
+-	CFLAGS += -DDLL_EXPORTS
+-	DLLDEPS = -L$(PYTHONSRC)/libs -lpython26
+-	DLLDEPS += $(CLIENTLIB) -lws2_32
+-	DLLTOOL = i586-mingw32msvc-dlltool
+-	DLLWRAP = i586-mingw32msvc-dllwrap
+-endif
+-endif
++clean::
++	python setup.py clean --all
++	rm -f $(DLLOBJS)
++	rm -fr Debug/ Release/
++	rm -f *.d
++	rm -fr ../Debug
++	rm -fr ../Release
+ 
+-INCLUDES = -I$(DEVLIB)/include -I$(DEVLIB)/dpflib
+-INCLUDES += $(PYTHONINCLUDES)
+ 
+-CFLAGS +=  -DMODULENAME=$(MODULENAME)
+-CFLAGS +=  -Wall
++distinstall:
++	python setup.py install
+ 
+-all: dll
++#installdll:: $(DLL)
++#	cp $(DLL) $(DLLINSTALLDIR)/lib$(INSTALLNAME).so
+ 
+-install:: installdll
+-	@cp $(DLL) $(DLLINSTALLDIR)/$(INSTALLNAME)$(DLLEXT)
+-	@echo -------------------------------------------------------------------
+-	@echo Python module installed in:
+-	@echo `pwd`/$(DLLINSTALLDIR)/$(INSTALLNAME)$(DLLEXT)
+-	@echo -------------------------------------------------------------------
+-	@echo
++dllinstall:
++	[ -e $(DLLINSTALLDIR) ] || mkdir $(DLLINSTALLDIR)
++	@cp ./build/lib*/$(LIBNAME)$(DLLEXT) $(DLLINSTALLDIR)/$(LIBNAME)$(DLLEXT)
++	@cp ./build/lib*/$(LIBNAME)$(DLLEXT) $(DLLINSTALLDIR)/$(LIBNAME)lib$(DLLEXT)
+ 
++install: python dllinstall
+diff -Nurp -x '.svn*' -x 'src*' -x 'fw*' -x Changelog dpf-ax.r11orig/python/PKG-INFO dpf-ax/python/PKG-INFO
+--- dpf-ax.r11orig/python/PKG-INFO	1970-01-01 01:00:00.000000000 +0100
++++ dpf-ax/python/PKG-INFO	2012-04-23 10:08:24.437951045 +0200
+@@ -0,0 +1,12 @@
++Metadata-Version: 1.0
++Name: pydpf
++Version: 0.202devel
++Summary: DPF access extension module
++Home-page: http://dpf-ax.sourceforge.net
++Author: Martin Strubel/ BoeserFisch / superelchi / irimi
++Author-email: hackfin@section5.ch
++License: LGPLv2
++Description: 
++        pydpflib provides dpf-ax access to python, with interface to show RGB Images on DPF directly.
++                
++Platform: UNKNOWN
+diff -Nurp -x '.svn*' -x 'src*' -x 'fw*' -x Changelog dpf-ax.r11orig/python/py_device.c dpf-ax/python/py_device.c
+--- dpf-ax.r11orig/python/py_device.c	2012-04-23 11:33:32.645806731 +0200
++++ dpf-ax/python/py_device.c	2012-04-23 11:17:46.669852722 +0200
+@@ -6,20 +6,34 @@
+  * 
+  * Additions by BöserFisch for hacked DPF access
+  *
++ * Additions by irimi_at_gmx_de for direct Python RGB Image access
++ *
+  */
+ 
+-#include "Python.h"
++#include <Python.h>
+ #include "dpf.h"
+ 
+ #ifdef DEBUG
+ #	include <stdio.h>
+ #endif
+ 
++#define _RGB565_0(p) \
++	(( ((p->R) & 0xf8)      ) | (((p->G) & 0xe0) >> 5))
++#define _RGB565_1(p) \
++	(( ((p->G) & 0x1c) << 3 ) | (((p->B) & 0xf8) >> 3))
++
+ #define CONCAT(x, y)   x##y
+ #define INITMODULE(x)  CONCAT(init, x)
+ #define RESOLVE(x)     #x
+ #define STRINGIFY(x)   RESOLVE(x)
+ 
++typedef struct {
++    unsigned char R;
++    unsigned char G;
++    unsigned char B;
++    unsigned char A;
++} RGBA;
++
+ ////////////////////////////////////////////////////////////////////////////
+ // AUX
+ 
+@@ -38,7 +52,7 @@ handleError(int err, int line)
+ 			sprintf(s, "%d:%s", line, dev_errstr(err));
+ 			break;
+ 		default:
+-			sprintf(s, "%d:(%x): %s", line, err, dev_errstr(err));
++			sprintf(s, "Line %d: %s (code %x)", line, dev_errstr(err), err);
+ 	}
+ 	PyErr_SetString(exctype, s);
+ 	return NULL;
+@@ -216,6 +230,10 @@ Device_setProperty(DeviceObject *self, P
+ 		v.type = TYPE_INTEGER;
+ 		v.value.integer = PyInt_AsLong(p);
+ 	}
++	else{
++		return NULL;
++	}
++
+ 
+ 	error = dpf_setproperty(self->dpf, prop, &v);
+ 	if (error < 0) return HANDLE_ERROR(error, "set_property");
+@@ -333,6 +351,74 @@ Device_runapp(DeviceObject *self, PyObje
+ 	return Py_None;
+ 
+ }
++
++PyObject *
++Device_showRGBAImage(DeviceObject *self, PyObject *args)
++{
++
++	int error;
++	Py_buffer pybuf;
++	int width;
++	int height;
++	int row;
++	int col;
++    int index;
++    short rect[4];
++    RGBA *p;
++    unsigned char *pix;
++    unsigned char *fb_565=NULL;
++	PyObject *po;
++
++	if (!PyArg_ParseTuple(args, "IIIIO", &col, &row, &width,&height, &po)){
++		PyErr_SetString(PyExc_TypeError, "ParseTuple showRGBAImage");
++		return NULL;
++	}
++	rect[0] = col; rect[1] = row;
++	rect[2] = col + width; rect[3] = row + height;
++
++	if (PyObject_CheckBuffer(po)){
++		error = PyObject_GetBuffer(po, &pybuf, PyBUF_SIMPLE);
++		if (error < 0) return HANDLE_ERROR(error, "read buffer");
++	}
++	else{
++		PyErr_SetString(PyExc_TypeError, "Wrong gfx data buffer type");
++		return NULL;
++	}
++
++	if (pybuf.len != height * width * 4){
++		PyErr_SetString(PyExc_TypeError, "Wrong gfx data buffer size");
++		return NULL;
++	}
++
++	fb_565 = malloc(height * width * 2);
++    p = (RGBA *)(pybuf.buf);
++	pix = fb_565;
++    for (index = 0; index < pybuf.len-4; index+=4) {
++	    *pix++ = _RGB565_0(p);
++	    *pix++ = _RGB565_1(p);
++	    p++;
++	}
++	dpf_screen_blit(self->dpf, fb_565, rect);
++
++	if (fb_565) free(fb_565);
++    PyBuffer_Release(&pybuf); // !?
++
++    Py_INCREF(Py_None);
++    return Py_None;
++}
++
++PyObject *
++Device_getRes(DeviceObject *self)
++{
++	return Py_BuildValue("(ii)",(self->dpf)->width, (self->dpf)->height);
++}
++
++PyObject *
++Device_version(DeviceObject *self)
++{
++	return Py_BuildValue("(s)",dpf_getVersion());
++}
++
+ static PyMethodDef Device_methods[] = 
+ {
+ 	// BASIC ACCESS
+@@ -348,6 +434,9 @@ static PyMethodDef Device_methods[] =
+ 	{"loadApp",      (PyCFunction) Device_loadapp,         METH_VARARGS},
+ 	{"run",          (PyCFunction) Device_exec,            METH_VARARGS},
+ 	{"runApp",       (PyCFunction) Device_runapp,          METH_VARARGS},
++	{"getRes",       (PyCFunction) Device_getRes,          METH_VARARGS},
++	{"showRGBAImage", (PyCFunction) Device_showRGBAImage,  METH_VARARGS},
++	{"version",      (PyCFunction) Device_version,  METH_VARARGS},
+ 	{NULL,		NULL}		/* sentinel */
+ };
+ 
+@@ -489,7 +578,8 @@ static PyMethodDef device_methods[] = {
+ #endif
+ 
+ void
+-INITMODULE(MODULENAME)(void)
++//INITMODULE(MODULENAME)(void)
++initdpf(void)
+ {
+ 	// XXX
+ 	// this only for windows portability
+diff -Nurp -x '.svn*' -x 'src*' -x 'fw*' -x Changelog dpf-ax.r11orig/python/setup.py dpf-ax/python/setup.py
+--- dpf-ax.r11orig/python/setup.py	1970-01-01 01:00:00.000000000 +0100
++++ dpf-ax/python/setup.py	2012-04-23 10:08:24.437951045 +0200
+@@ -0,0 +1,50 @@
++#!/usr/bin/env python
++
++from distutils.core import setup, Extension
++import sys
++import os
++from os.path import join
++
++program_files = os.getenv('PROGRAMFILES')
++platform = sys.platform.lower()
++
++libraries = ['dpf', 'usb']
++extra_link_args = []
++extra_compile_args = []
++
++#print "***********************************"
++#print "***** Platform =%s"%(platform)
++#print "***********************************"
++
++include_dirs=['../dpflib','../include']
++library_dirs=['../dpflib']
++
++if -1 != platform.find("win32"):
++    print "*** WIN 32 Platform ***"
++    libraries = ["libusb","libdpf"]
++    extra_link_args = ['/LIBPATH:' + join(program_files, 'Libusb-win32', 'lib', 'msvc')]
++    extra_compile_args = ['/I' + join(program_files, 'Libusb-win32', 'include')]
++else:
++    print "*** Assuming GNU/Linux Platform ***"
++
++dpfmodule = Extension(name = 'dpf',
++                    libraries = libraries,
++                    library_dirs=library_dirs,
++                    include_dirs=include_dirs,
++                    sources = ['py_device.c'],
++                    extra_link_args = extra_link_args,
++                    extra_compile_args = extra_compile_args
++                    )
++
++setup(name = 'pydpf',
++    version = '0.0202devel',
++    description = "DPF access extension module",
++    long_description =
++    """
++    pydpflib provides dpf-ax access to python, with interface to show RGB images on DPF directly.
++    """,
++    author = 'Martin Strubel/ BoeserFisch / superelchi / irimi',
++    author_email = 'irimi@gmx.de',
++    url = 'http://sourceforge.net/projects/dpf-ax',
++    license = 'LGPLv2',
++    ext_modules = [dpfmodule])

@@ -21,9 +21,6 @@ if [ $err ]; then
 fi
 
 # download and untar dpf-ax tools
-
-#curl http://dpf-ax.svn.sourceforge.net/viewvc/dpf-ax/trunk/?view=tar | tar -zxv
-#cd trunk/dpflib
 wget https://sourceforge.net/projects/dpf-ax/files/dpf-ax_20151118.tgz/download -O dpf-ax_20151118.tgz
 tar xzf dpf-ax_20151118.tgz
 cd dpf-ax
@@ -32,11 +29,7 @@ cd dpf-ax
 # firmware for your dpf, it is needed to build libdpf library and module
 make
 
-#cd ..
-# download patch for mpd plugin and scaled fonts for dpf
-#wget http://sourceforge.net/p/pydpf/code/ci/1b10e3224801f9ed1874c52acaa6b98be9f66aae/tree/distributions/pydpflib/dpflib_python_lcd4linux.patch?format=raw -O dpflib_python_lcd4linux.patch
-
-# patch files
+# patch files for mpd plugin and scaled fonts for dpf
 patch -p1 < ../dpflib_python_lcd4linux.patch
 
 # Run lcd4linux installation script
